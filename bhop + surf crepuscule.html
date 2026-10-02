@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>bhop + surf crepuscule</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#15130f;user-select:none;-webkit-user-select:none}
+canvas{display:block;width:100%;height:100%}
+#hud{position:fixed;inset:0;pointer-events:none;font:14px/1.3 "Lucida Console",Consolas,"DejaVu Sans Mono","Courier New",monospace;color:#fff;text-shadow:1px 1px 0 #000}
+#xh{position:absolute;left:50%;top:50%}
+#xh i{position:absolute;background:#c8f0b4}
+#xh i:nth-child(1){left:-10px;top:0;width:6px;height:1px}
+#xh i:nth-child(2){left:5px;top:0;width:6px;height:1px}
+#xh i:nth-child(3){left:0;top:-10px;width:1px;height:6px}
+#xh i:nth-child(4){left:0;top:5px;width:1px;height:6px}
+#ro{position:absolute;left:50%;top:50%;transform:translate(-50%,22px);text-align:center;white-space:nowrap}
+#b{color:#d9c98a}
+#menu{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(18,16,12,.6);font:12px Tahoma,Verdana,Arial,sans-serif;color:#d8ded3}
+#menu .win{background:#4c5844;border:1px solid;border-color:#889180 #282e22 #282e22 #889180;box-shadow:0 0 0 1px #1c2118;width:372px;max-width:94vw}
+#menu .bar{padding:7px 10px;color:#fff;font-weight:bold;letter-spacing:.3px}
+#menu .body{margin:0 6px 6px;padding:12px 14px 14px;background:#3e4637;border:1px solid;border-color:#282e22 #889180 #889180 #282e22}
+#menu .maps{display:flex;gap:8px;margin-bottom:14px}
+#menu .map{flex:1;padding:9px 12px;background:#4c5844;border:1px solid;border-color:#889180 #282e22 #282e22 #889180;color:#fff;cursor:pointer}
+#menu .map:hover{background:#5a6850}
+#menu .map b{display:block;font-size:15px}
+#menu .map span{display:block;color:#c4b550;margin:2px 0 6px}
+#menu table{border-collapse:collapse}
+#menu td{padding:3px 0;vertical-align:top}
+#menu td:first-child{color:#c4b550;padding-right:22px;white-space:nowrap}
+#menu .tip{margin:12px 0 0;line-height:1.5}
+#menu .tip b{color:#c4b550;font-weight:normal}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div id="xh"><i></i><i></i><i></i><i></i></div>
+  <div id="ro"><div id="v">0</div><div id="t">00:00.000</div><div id="b"></div></div>
+</div>
+<div id="menu"><div class="win">
+  <div class="bar">Choisir une map</div>
+  <div class="body">
+    <div class="maps">
+      <div class="map" data-map="bhop"><b>Bhop</b><span>bhop_crepuscule</span>Clique pour jouer</div>
+      <div class="map" data-map="surf"><b>Surf</b><span>surf_crepuscule</span>Clique pour jouer</div>
+    </div>
+    <table>
+      <tr><td>ZQSD / WASD</td><td>se déplacer, strafer</td></tr>
+      <tr><td>Espace (maintenu)</td><td>sauter, auto-bhop</td></tr>
+      <tr><td>Souris</td><td>viser</td></tr>
+      <tr><td>Clic gauche</td><td>coup de couteau</td></tr>
+      <tr><td>R</td><td>dernier checkpoint / début du stage</td></tr>
+      <tr><td>T</td><td>recommencer la map</td></tr>
+      <tr><td>M</td><td>retour à ce menu</td></tr>
+    </table>
+    <p class="tip"><b>Surf :</b> sur une rampe, maintiens la touche de strafe vers la rampe (Q si la rampe est à gauche, D si elle est à droite). N'appuie jamais sur Z. Oriente la souris pour monter ou descendre sur la face.</p>
+  </div>
+</div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ---- Physique (unités Source) — inchangée ----
+const TICK = 64, DT = 1 / TICK;
+const GRAVITY = 800, JUMP_SPEED = 301.99, MAX_SPEED = 250;
+const ACCELERATE = 5.5, FRICTION = 5.2, STOP_SPEED = 80;
+const AIR_ACCELERATE = 100, AIR_WISH_CAP = 30;
+const HULL = 16, HULL_H = 72, EYE = 64;       // hull 32x32x72
+const SENS = 0.0015, FOV = 74;
+// surf : mêmes formules, air accelerate plus fort, vitesse plafonnée, sous-pas de collision
+const SURF_AIR_ACCELERATE = 150, MAX_VELOCITY = 3500, SUBSTEP = 8, SURF_GROUND_NY = 0.7;
+
+// ---- Monde ----
+const PLAT_H = 6000;      // blocs pleins jusque dans le brouillard (collision = visuel)
+const KILL_DEPTH = 300;   // sous la plateforme la plus basse à proximité
+
+// ---- Map bhop : x,z = centre, y = hauteur du dessus ; 5 sections séparées par les checkpoints ----
+const MAP = [
+  {x:0, y:0, z:0, largeur:480, profondeur:640, type:'start'},
+  {x:0, y:0, z:-483, largeur:360, profondeur:120, type:'normal'},
+  {x:0, y:0, z:-674, largeur:360, profondeur:122, type:'normal'},
+  {x:0, y:0, z:-869, largeur:360, profondeur:125, type:'normal'},
+  {x:0, y:0, z:-1068, largeur:360, profondeur:127, type:'normal'},
+  {x:0, y:0, z:-1270, largeur:360, profondeur:130, type:'normal'},
+  {x:0, y:0, z:-1476, largeur:360, profondeur:132, type:'normal'},
+  {x:0, y:0, z:-1686, largeur:360, profondeur:134, type:'normal'},
+  {x:0, y:0, z:-1900, largeur:360, profondeur:137, type:'normal'},
+  {x:0, y:0, z:-2117, largeur:360, profondeur:139, type:'normal'},
+  {x:0, y:0, z:-2338, largeur:360, profondeur:142, type:'normal'},
+  {x:0, y:0, z:-2669, largeur:400, profondeur:400, type:'checkpoint'},
+  {x:164, y:0, z:-3021, largeur:120, profondeur:120, type:'normal'},
+  {x:262, y:0, z:-3191, largeur:120, profondeur:120, type:'normal'},
+  {x:279, y:0, z:-3390, largeur:120, profondeur:120, type:'normal'},
+  {x:192, y:0, z:-3576, largeur:120, profondeur:120, type:'normal'},
+  {x:87, y:0, z:-3757, largeur:120, profondeur:120, type:'normal'},
+  {x:-20, y:0, z:-3942, largeur:110, profondeur:110, type:'normal'},
+  {x:-39, y:0, z:-4159, largeur:110, profondeur:110, type:'normal'},
+  {x:55, y:0, z:-4361, largeur:110, profondeur:110, type:'normal'},
+  {x:169, y:0, z:-4558, largeur:110, profondeur:110, type:'normal'},
+  {x:209, y:0, z:-4786, largeur:110, profondeur:110, type:'normal'},
+  {x:148, y:0, z:-5014, largeur:110, profondeur:110, type:'normal'},
+  {x:148, y:0, z:-5352, largeur:380, profondeur:380, type:'checkpoint'},
+  {x:148, y:28, z:-5681, largeur:120, profondeur:120, type:'normal'},
+  {x:171, y:56, z:-5846, largeur:120, profondeur:120, type:'normal'},
+  {x:218, y:84, z:-6009, largeur:120, profondeur:120, type:'normal'},
+  {x:242, y:112, z:-6180, largeur:120, profondeur:120, type:'normal'},
+  {x:242, y:140, z:-6356, largeur:120, profondeur:120, type:'normal'},
+  {x:242, y:168, z:-6535, largeur:120, profondeur:120, type:'normal'},
+  {x:242, y:196, z:-6719, largeur:160, profondeur:160, type:'normal'},
+  {x:167, y:116, z:-7000, largeur:140, profondeur:140, type:'normal'},
+  {x:10, y:20, z:-7273, largeur:140, profondeur:140, type:'normal'},
+  {x:-231, y:-90, z:-7514, largeur:130, profondeur:130, type:'normal'},
+  {x:-544, y:-210, z:-7694, largeur:130, profondeur:130, type:'normal'},
+  {x:-915, y:-330, z:-7793, largeur:120, profondeur:120, type:'normal'},
+  {x:-1331, y:-460, z:-7793, largeur:110, profondeur:110, type:'normal'},
+  {x:-1799, y:-520, z:-7793, largeur:400, profondeur:400, type:'checkpoint'},
+  {x:-2152, y:-508, z:-7855, largeur:144, profondeur:144, type:'normal'},
+  {x:-2366, y:-528, z:-7836, largeur:128, profondeur:128, type:'normal'},
+  {x:-2551, y:-512, z:-7869, largeur:112, profondeur:112, type:'normal'},
+  {x:-2785, y:-536, z:-7869, largeur:96, profondeur:96, type:'normal'},
+  {x:-2974, y:-516, z:-7818, largeur:96, profondeur:96, type:'normal'},
+  {x:-3199, y:-516, z:-7818, largeur:80, profondeur:80, type:'normal'},
+  {x:-3441, y:-532, z:-7861, largeur:80, profondeur:80, type:'normal'},
+  {x:-3650, y:-508, z:-7861, largeur:64, profondeur:64, type:'normal'},
+  {x:-3902, y:-520, z:-7905, largeur:64, profondeur:64, type:'normal'},
+  {x:-4133, y:-504, z:-7905, largeur:56, profondeur:56, type:'normal'},
+  {x:-4418, y:-524, z:-7880, largeur:48, profondeur:48, type:'normal'},
+  {x:-4674, y:-512, z:-7880, largeur:48, profondeur:48, type:'normal'},
+  {x:-5083, y:-542, z:-7880, largeur:380, profondeur:380, type:'checkpoint'},
+  {x:-5435, y:-566, z:-8083, largeur:130, profondeur:130, type:'normal'},
+  {x:-5543, y:-590, z:-8271, largeur:120, profondeur:120, type:'normal'},
+  {x:-5543, y:-614, z:-8494, largeur:110, profondeur:110, type:'normal'},
+  {x:-5429, y:-638, z:-8692, largeur:100, profondeur:100, type:'normal'},
+  {x:-5226, y:-662, z:-8809, largeur:96, profondeur:96, type:'normal'},
+  {x:-4986, y:-686, z:-8809, largeur:90, profondeur:90, type:'normal'},
+  {x:-4833, y:-666, z:-8938, largeur:72, profondeur:72, type:'normal'},
+  {x:-4797, y:-646, z:-9140, largeur:64, profondeur:64, type:'normal'},
+  {x:-4641, y:-686, z:-9362, largeur:96, profondeur:96, type:'normal'},
+  {x:-4641, y:-716, z:-9639, largeur:96, profondeur:96, type:'normal'},
+  {x:-4641, y:-746, z:-9931, largeur:88, profondeur:88, type:'normal'},
+  {x:-4641, y:-766, z:-10228, largeur:72, profondeur:72, type:'normal'},
+  {x:-4641, y:-826, z:-10815, largeur:480, profondeur:480, type:'fin'}
+];
+
+// ---- Décor non jouable (pas de collision) : y = sommet, h = hauteur (par défaut jusqu'au brouillard) ----
+const DECOR = [
+  {x:0, y:560, z:600, w:1100, d:90, tex:'sombre'},
+  {x:-640, y:380, z:-674, w:80, d:700, tex:'brique'},
+  {x:640, y:300, z:-1068, w:80, d:600, tex:'pierre'},
+  {x:-640, y:260, z:-1686, w:80, d:800, tex:'pierre'},
+  {x:640, y:420, z:-2117, w:80, d:500, tex:'brique'},
+  {x:-480, y:560, z:-968, w:130, d:130, tex:'beton'},
+  {x:480, y:560, z:-968, w:130, d:130, tex:'beton'},
+  {x:0, y:690, z:-968, w:1090, d:130, h:130, tex:'beton'},
+  {x:-520, y:600, z:-2439, w:130, d:130, tex:'pierre'},
+  {x:520, y:600, z:-2439, w:130, d:130, tex:'pierre'},
+  {x:0, y:730, z:-2439, w:1170, d:130, h:130, tex:'pierre'},
+  {x:-425, y:700, z:-3296, w:220, d:220, tex:'sombre'},
+  {x:897, y:900, z:-3336, w:260, d:260, tex:'pierre'},
+  {x:-433, y:480, z:-3457, w:190, d:190, tex:'brique'},
+  {x:517, y:640, z:-4252, w:230, d:230, tex:'beton'},
+  {x:-489, y:820, z:-4615, w:210, d:210, tex:'pierre'},
+  {x:800, y:430, z:-4682, w:180, d:180, tex:'sombre'},
+  {x:-372, y:588, z:-5581, w:130, d:130, tex:'brique'},
+  {x:668, y:588, z:-5581, w:130, d:130, tex:'brique'},
+  {x:148, y:718, z:-5581, w:1170, d:130, h:130, tex:'brique'},
+  {x:856, y:672, z:-6094, w:80, d:900, tex:'brique'},
+  {x:-359, y:484, z:-6174, w:200, d:200, tex:'sombre'},
+  {x:882, y:1146, z:-6719, w:320, d:320, tex:'pierre'},
+  {x:512, y:440, z:-7563, w:220, d:220, tex:'beton'},
+  {x:-669, y:210, z:-7076, w:240, d:240, tex:'sombre'},
+  {x:-760, y:20, z:-8373, w:260, d:260, tex:'brique'},
+  {x:-1331, y:-180, z:-7193, w:210, d:210, tex:'pierre'},
+  {x:-2317, y:-188, z:-7278, w:200, d:200, tex:'beton'},
+  {x:-2447, y:-72, z:-8460, w:240, d:240, tex:'sombre'},
+  {x:-2829, y:24, z:-7277, w:180, d:180, tex:'pierre'},
+  {x:-3337, y:-272, z:-8452, w:220, d:220, tex:'brique'},
+  {x:-4006, y:90, z:-7314, w:230, d:230, tex:'sombre'},
+  {x:-4467, y:-154, z:-8438, w:200, d:200, tex:'beton'},
+  {x:-5074, y:-22, z:-8388, w:190, d:190, tex:'pierre'},
+  {x:-6106, y:-290, z:-7946, w:240, d:240, tex:'sombre'},
+  {x:-5966, y:-218, z:-9002, w:200, d:200, tex:'brique'},
+  {x:-4182, y:-386, z:-9041, w:220, d:220, tex:'beton'},
+  {x:-5201, y:-286, z:-9931, w:260, d:260, tex:'pierre'},
+  {x:-5201, y:-266, z:-10419, w:130, d:130, tex:'beton'},
+  {x:-4081, y:-266, z:-10419, w:130, d:130, tex:'beton'},
+  {x:-4641, y:-136, z:-10419, w:1250, d:130, h:130, tex:'beton'},
+  {x:-4641, y:-356, z:-11375, w:1500, d:90, tex:'sombre'}
+];
+
+// ---- Map surf : 5 stages séparés par les checkpoints ----
+// plateforme : x,z = centre, y = dessus, dir = cap de départ (degrés, 0 = -z, 90 = +x)
+// rampe (toit en A) : x,y,z = début de l'arête, dir = cap, pente < 0 = descente ; sans x,y,z = segment enchaîné au précédent (virage)
+const MAP_SURF = [
+  {type:'start', x:0, y:0, z:0, largeur:300, profondeur:600, dir:0},
+  {type:'rampe', x:-122, y:-50, z:-340, dir:0, longueur:2400, largeur:420, hauteur:340, pente:-20},
+  {type:'rampe', x:-151, y:-979, z:-2729, dir:-2, longueur:2000, largeur:420, hauteur:340, pente:-14},
+  {type:'checkpoint', x:-77, y:-1958, z:-5731, largeur:1000, profondeur:1600, dir:0},
+  {type:'rampe', x:-182, y:-2008, z:-6571, dir:0, longueur:1700, largeur:420, hauteur:340, pente:-18},
+  {type:'rampe', x:35, y:-2610, z:-8019, dir:-2, longueur:2100, largeur:420, hauteur:340, pente:-14},
+  {type:'rampe', x:-252, y:-3315, z:-10201, dir:-2, longueur:2100, largeur:420, hauteur:340, pente:-12},
+  {type:'checkpoint', x:-259, y:-4183, z:-13479, largeur:1000, profondeur:1600, dir:0},
+  {type:'rampe', x:-154, y:-4233, z:-14319, dir:0, longueur:2200, largeur:420, hauteur:340, pente:-34},
+  {type:'rampe', dir:0, longueur:200, pente:-27},
+  {type:'rampe', dir:0, longueur:200, pente:-20},
+  {type:'rampe', dir:0, longueur:200, pente:-13},
+  {type:'rampe', dir:0, longueur:200, pente:-6},
+  {type:'rampe', dir:0, longueur:200, pente:1},
+  {type:'rampe', dir:0, longueur:200, pente:8},
+  {type:'rampe', dir:0, longueur:200, pente:15},
+  {type:'rampe', dir:0, longueur:900, pente:22},
+  {type:'rampe', x:-118, y:-5741, z:-19731, dir:1, longueur:3200, largeur:420, hauteur:340, pente:-26},
+  {type:'rampe', dir:1, longueur:700, pente:-8},
+  {type:'checkpoint', x:-132, y:-7734, z:-24966, largeur:1100, profondeur:1800, dir:0},
+  {type:'rampe', x:-52, y:-7784, z:-25906, dir:0, longueur:1500, largeur:320, hauteur:260, pente:-20},
+  {type:'rampe', dir:0, longueur:200, pente:-13},
+  {type:'rampe', dir:-6, longueur:200, pente:-5},
+  {type:'rampe', dir:-12, longueur:200, pente:-5},
+  {type:'rampe', dir:-18, longueur:200, pente:-5},
+  {type:'rampe', dir:-24, longueur:200, pente:-5},
+  {type:'rampe', dir:-30, longueur:200, pente:-5},
+  {type:'rampe', dir:-36, longueur:200, pente:-5},
+  {type:'rampe', dir:-42, longueur:200, pente:-5},
+  {type:'rampe', dir:-48, longueur:200, pente:-5},
+  {type:'rampe', dir:-54, longueur:200, pente:-5},
+  {type:'rampe', dir:-60, longueur:200, pente:-5},
+  {type:'rampe', dir:-66, longueur:200, pente:-5},
+  {type:'rampe', dir:-72, longueur:200, pente:-5},
+  {type:'rampe', dir:-78, longueur:200, pente:-5},
+  {type:'rampe', dir:-84, longueur:200, pente:-5},
+  {type:'rampe', dir:-90, longueur:200, pente:-5},
+  {type:'rampe', x:-2243, y:-8751, z:-29152, dir:-88, longueur:900, largeur:320, hauteur:260, pente:-12},
+  {type:'rampe', dir:-82, longueur:200, pente:-5},
+  {type:'rampe', dir:-76, longueur:200, pente:-5},
+  {type:'rampe', dir:-70, longueur:200, pente:-5},
+  {type:'rampe', dir:-64, longueur:200, pente:-5},
+  {type:'rampe', dir:-58, longueur:200, pente:-5},
+  {type:'rampe', dir:-52, longueur:200, pente:-5},
+  {type:'rampe', dir:-46, longueur:200, pente:-5},
+  {type:'rampe', dir:-40, longueur:200, pente:-5},
+  {type:'rampe', dir:-34, longueur:200, pente:-5},
+  {type:'rampe', dir:-28, longueur:200, pente:-5},
+  {type:'rampe', dir:-22, longueur:200, pente:-5},
+  {type:'rampe', dir:-16, longueur:200, pente:-5},
+  {type:'rampe', dir:-10, longueur:200, pente:-5},
+  {type:'rampe', dir:-4, longueur:200, pente:-5},
+  {type:'rampe', dir:2, longueur:200, pente:-5},
+  {type:'rampe', dir:2, longueur:700, pente:-8},
+  {type:'checkpoint', x:-4738, y:-9711, z:-33237, largeur:1000, profondeur:1600, dir:0},
+  {type:'rampe', x:-4843, y:-9761, z:-34077, dir:0, longueur:1600, largeur:420, hauteur:340, pente:-30},
+  {type:'rampe', dir:0, longueur:200, pente:-23},
+  {type:'rampe', dir:0, longueur:200, pente:-16},
+  {type:'rampe', dir:4, longueur:180, pente:-8},
+  {type:'rampe', dir:8, longueur:180, pente:-8},
+  {type:'rampe', dir:12, longueur:180, pente:-8},
+  {type:'rampe', dir:16, longueur:180, pente:-8},
+  {type:'rampe', dir:20, longueur:180, pente:-8},
+  {type:'rampe', dir:24, longueur:180, pente:-8},
+  {type:'rampe', dir:28, longueur:180, pente:-8},
+  {type:'rampe', dir:32, longueur:180, pente:-8},
+  {type:'rampe', dir:36, longueur:180, pente:-8},
+  {type:'rampe', dir:40, longueur:180, pente:-8},
+  {type:'rampe', dir:44, longueur:180, pente:-8},
+  {type:'rampe', dir:48, longueur:180, pente:-8},
+  {type:'rampe', dir:48, longueur:500, pente:-10},
+  {type:'rampe', x:-3104, y:-11426, z:-38219, dir:47, longueur:900, largeur:320, hauteur:260, pente:-10},
+  {type:'rampe', dir:43, longueur:180, pente:-6},
+  {type:'rampe', dir:39, longueur:180, pente:-6},
+  {type:'rampe', dir:35, longueur:180, pente:-6},
+  {type:'rampe', dir:31, longueur:180, pente:-6},
+  {type:'rampe', dir:27, longueur:180, pente:-6},
+  {type:'rampe', dir:23, longueur:180, pente:-6},
+  {type:'rampe', dir:19, longueur:180, pente:-6},
+  {type:'rampe', dir:15, longueur:180, pente:-6},
+  {type:'rampe', dir:11, longueur:180, pente:-6},
+  {type:'rampe', dir:7, longueur:180, pente:-6},
+  {type:'rampe', dir:3, longueur:180, pente:-6},
+  {type:'rampe', dir:-1, longueur:180, pente:-6},
+  {type:'rampe', dir:-1, longueur:500, pente:-12},
+  {type:'rampe', x:-1894, y:-12267, z:-41872, dir:0, longueur:800, largeur:420, hauteur:340, pente:-12},
+  {type:'rampe', dir:0, longueur:300, pente:-17},
+  {type:'rampe', dir:0, longueur:300, pente:-22},
+  {type:'rampe', dir:0, longueur:300, pente:-27},
+  {type:'rampe', dir:0, longueur:1200, pente:-32},
+  {type:'rampe', dir:0, longueur:200, pente:-25},
+  {type:'rampe', dir:0, longueur:200, pente:-18},
+  {type:'rampe', dir:0, longueur:200, pente:-11},
+  {type:'rampe', dir:0, longueur:200, pente:-4},
+  {type:'rampe', dir:0, longueur:200, pente:3},
+  {type:'rampe', dir:0, longueur:200, pente:10},
+  {type:'rampe', dir:0, longueur:700, pente:17},
+  {type:'fin', x:-1818, y:-14067, z:-50349, largeur:1500, profondeur:2400, dir:0}
+];
+
+// ================= Outils procéduraux =================
+const T = 512, V3 = THREE.Vector3;
+const rng = s => () => { s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+const hash = (x, y, s) => { let n = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(s, 69069) | 0; n = Math.imul(n ^ n >>> 13, 1274126177); return ((n ^ n >>> 16) >>> 0) / 4294967296; };
+function vnoise(x, y, s, per) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi, u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  let x0 = xi, x1 = xi + 1, y0 = yi, y1 = yi + 1;
+  if (per) { x0 = (x0 % per + per) % per; x1 = (x1 % per + per) % per; y0 = (y0 % per + per) % per; y1 = (y1 % per + per) % per; }
+  const a = hash(x0, y0, s), b = hash(x1, y0, s), c = hash(x0, y1, s), d = hash(x1, y1, s);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function fbm(x, y, s, oct, per) { let v = 0, a = 0.5, n = 0; for (let i = 0; i < oct; i++) { v += a * vnoise(x, y, s + i * 31, per); n += a; a *= 0.5; x *= 2; y *= 2; if (per) per *= 2; } return v / n; }
+const sstep = (a, b, x) => { x = Math.min(1, Math.max(0, (x - a) / (b - a))); return x * x * (3 - 2 * x); };
+const mix = (a, b, t) => a + (b - a) * t;
+const css = (c, f = 1, a = 1) => `rgba(${c[0] * f | 0},${c[1] * f | 0},${c[2] * f | 0},${a})`;
+const mkCanvas = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+
+// ================= Rendu =================
+const renderer = new THREE.WebGLRenderer({canvas: document.getElementById('c'), antialias: true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.autoClear = false;
+const ANISO = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+const FOG = [198, 177, 146], SUN = new V3(-0.55, 0.6, -0.58).normalize();
+const FOGC = new THREE.Color(FOG[0] / 255, FOG[1] / 255, FOG[2] / 255);
+const mkScene = (fog, amb) => {   // ambiante froide + directionnelle chaude
+  const s = new THREE.Scene(); s.fog = fog; s.add(new THREE.HemisphereLight(0x8d9db4, 0x62574b, amb));
+  const sun = new THREE.DirectionalLight(0xffdcab, 0.85); sun.position.copy(SUN); s.add(sun); return s;
+};
+const scene = mkScene(new THREE.Fog(FOGC, 900, 6500), 0.78), sceneSurf = mkScene(new THREE.FogExp2(FOGC, 0.00009), 1.0);   // surf : vue longue
+let world = scene;
+const camera = new THREE.PerspectiveCamera(FOV, 1, 2, 120000);
+camera.rotation.order = 'YXZ';
+
+// ================= Textures (canvas 512, mosaïque) =================
+const wrap = (g, fn) => { for (const ox of [-T, 0, T]) for (const oy of [-T, 0, T]) { g.save(); g.translate(ox, oy); fn(); g.restore(); } };
+function grime(g, seed, big, mid, grain, stain) {
+  const im = g.getImageData(0, 0, T, T), d = im.data, r = rng(seed);
+  for (let y = 0, i = 0; y < T; y++) for (let x = 0; x < T; x++, i += 4) {
+    const b = fbm(x / T * 3, y / T * 3, seed, 3, 3), m = fbm(x / T * 14, y / T * 14, seed + 5, 2, 14), f = fbm(x / T * 56, y / T * 56, seed + 9, 2, 56);
+    const st = Math.max(0, 0.46 - b) * stain, pit = r() < 0.006 ? 0.3 : 0;
+    const k = 1 + (b - 0.5) * big + (m - 0.5) * mid + (f - 0.5) * mid * 0.9 + (r() - 0.5) * grain - st - pit;
+    d[i] *= k; d[i + 1] *= k * (1 - st * 0.1); d[i + 2] *= k * (1 - st * 0.25);
+  }
+  g.putImageData(im, 0, 0);
+}
+function drips(g, r, n, a) {
+  for (let i = 0; i < n; i++) {
+    const x = r() * T, y = r() * T, w = 2 + r() * 6, h = 60 + r() * 240;
+    wrap(g, () => { const gr = g.createLinearGradient(0, y, 0, y + h); gr.addColorStop(0, 'rgba(34,26,18,0)'); gr.addColorStop(0.08, `rgba(34,26,18,${a})`); gr.addColorStop(1, 'rgba(34,26,18,0)'); g.fillStyle = gr; g.fillRect(x, y, w, h); g.fillRect(x + w * 0.3, y, w * 0.4, h); });
+  }
+}
+function cracks(g, r, n) {
+  g.strokeStyle = 'rgba(22,18,14,.38)'; g.lineWidth = 1;
+  for (let i = 0; i < n; i++) { let x = r() * T, y = r() * (T - 200); g.beginPath(); g.moveTo(x, y); for (let k = 0, m = 5 + r() * 8; k < m; k++) { x += (r() - 0.5) * 16; y += 5 + r() * 12; g.lineTo(x, y); } g.stroke(); }
+}
+function specks(g, r, n, col) { for (let i = 0; i < n; i++) { g.fillStyle = css(col, 0.85 + r() * 0.3, 0.75); g.fillRect(r() * T, r() * T, 1 + r() * 4, 1 + r() * 3); } }
+function blocks(g, r, rows, wmin, wmax, base, joint, vari, stagger) {
+  g.fillStyle = css(joint); g.fillRect(0, 0, T, T);
+  let y = 0;
+  rows.forEach((h, row) => {
+    const ws = []; let sum = 0;
+    while (sum < T) { let w = wmin + r() * (wmax - wmin) | 0; if (T - sum - w < wmin) w = T - sum; ws.push(w); sum += w; }
+    let x = stagger ? (row % 2) * stagger : r() * T | 0;
+    for (const w of ws) {
+      const f = 1 + (r() - 0.5) * vari, tint = (r() - 0.5) * 12, j = 1 + r() * 2, bx = x % T;
+      for (const ox of [0, -T]) {
+        const X = bx + ox + j, Y = y + j, W = w - 2 * j, H = h - 2 * j;
+        g.fillStyle = css([base[0] + tint, base[1] + tint * 0.6, base[2] - tint], f); g.fillRect(X, Y, W, H);
+        g.strokeStyle = 'rgba(0,0,0,.09)'; g.lineWidth = 7; g.strokeRect(X + 3, Y + 3, W - 6, H - 6);
+        g.fillStyle = 'rgba(255,255,255,.09)'; g.fillRect(X, Y, W, 2); g.fillRect(X, Y, 2, H);
+        g.fillStyle = 'rgba(0,0,0,.24)'; g.fillRect(X, Y + H - 3, W, 3); g.fillRect(X + W - 3, Y, 3, H);
+      }
+      x += w;
+    }
+    y += h;
+  });
+}
+function concrete(g, r, base, panel) {
+  g.fillStyle = css(base); g.fillRect(0, 0, T, T);
+  g.fillStyle = 'rgba(0,0,0,.07)'; for (let y = 0; y < T; y += 32) g.fillRect(0, y + (r() * 3 | 0), T, 1);
+  for (let k = 0; k < T; k += panel) {
+    g.fillStyle = 'rgba(0,0,0,.42)'; g.fillRect(k, 0, 3, T); g.fillRect(0, k, T, 3);
+    g.fillStyle = 'rgba(255,255,255,.10)'; g.fillRect(k + 3, 0, 1, T); g.fillRect(0, k + 3, T, 1);
+  }
+}
+function tieHoles(g) {
+  for (let px = 0; px < T; px += 256) for (let py = 0; py < T; py += 256) for (const [ox, oy] of [[44, 44], [212, 44], [44, 212], [212, 212]]) {
+    g.fillStyle = 'rgba(0,0,0,.5)'; g.beginPath(); g.arc(px + ox, py + oy, 5, 0, 7); g.fill();
+    g.strokeStyle = 'rgba(255,255,255,.12)'; g.lineWidth = 1; g.beginPath(); g.arc(px + ox, py + oy + 1, 6, 0.3, 2.8); g.stroke();
+  }
+}
+function worldTex(seed, scale, draw, gr) {
+  const c = mkCanvas(T, T), g = c.getContext('2d'); draw(g, rng(seed)); grime(g, seed * 101, gr[0], gr[1], gr[2], gr[3]);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = ANISO;
+  const m = new THREE.MeshLambertMaterial({map: t, vertexColors: true}); m.userData.s = scale; return m;
+}
+const PAL = {pierre: [178, 163, 136], sombre: [116, 107, 96], brique: [134, 104, 84], beton: [152, 147, 136]}, ACCENT = [198, 116, 44];
+const M = {
+  pierre: worldTex(1, 256, (g, r) => { blocks(g, r, [72, 56, 88, 64, 48, 80, 104], 70, 170, PAL.pierre, [60, 52, 42], 0.24); cracks(g, r, 5); drips(g, r, 9, 0.26); }, [0.5, 0.4, 0.13, 1.1]),
+  sombre: worldTex(2, 320, (g, r) => { blocks(g, r, [128, 96, 112, 80, 96], 110, 230, PAL.sombre, [38, 34, 30], 0.2); cracks(g, r, 8); drips(g, r, 12, 0.3); }, [0.6, 0.4, 0.14, 1.2]),
+  brique: worldTex(3, 176, (g, r) => { blocks(g, r, Array(16).fill(32), 64, 64, PAL.brique, [70, 62, 54], 0.3, 32); drips(g, r, 10, 0.26); }, [0.55, 0.3, 0.12, 1.3]),
+  beton: worldTex(4, 384, (g, r) => { concrete(g, r, PAL.beton, 256); tieHoles(g); cracks(g, r, 4); drips(g, r, 16, 0.3); }, [0.6, 0.42, 0.15, 1.4]),
+  start: worldTex(5, 256, (g, r) => {
+    concrete(g, r, [164, 158, 146], 128); g.fillStyle = 'rgba(226,218,200,.82)';
+    for (let cx = 128; cx < T; cx += 256) for (let cy = 128; cy < T; cy += 256) { g.beginPath(); g.moveTo(cx - 76, cy + 28); g.lineTo(cx, cy - 44); g.lineTo(cx + 76, cy + 28); g.lineTo(cx + 76, cy + 66); g.lineTo(cx, cy - 6); g.lineTo(cx - 76, cy + 66); g.fill(); }
+    specks(g, r, 2600, [164, 158, 146]);
+  }, [0.45, 0.25, 0.12, 0.9]),
+  checkpoint: worldTex(6, 256, (g, r) => {
+    concrete(g, r, [120, 114, 104], 256);
+    for (let cx = 128; cx < T; cx += 256) for (let cy = 128; cy < T; cy += 256) { g.fillStyle = css(ACCENT); g.fillRect(cx - 106, cy - 106, 212, 212); g.strokeStyle = 'rgba(40,24,10,.55)'; g.lineWidth = 3; g.strokeRect(cx - 92, cy - 92, 184, 184); }
+    specks(g, r, 2200, [120, 114, 104]);
+  }, [0.5, 0.25, 0.12, 1.0]),
+  fin: worldTex(7, 256, (g, r) => {
+    for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) { g.fillStyle = css((x + y) % 2 ? [48, 45, 42] : [214, 205, 188]); g.fillRect(x * 64, y * 64, 64, 64); }
+    specks(g, r, 1800, [130, 124, 112]);
+  }, [0.5, 0.25, 0.12, 1.0])
+};
+
+// ================= Géométrie du monde =================
+function block(cx, cy, cz, w, h, d, side, top, cT, cB) {
+  const g = new THREE.BoxGeometry(w, h, d), p = g.attributes.position, n = g.attributes.normal, uv = g.attributes.uv, col = new Float32Array(p.count * 3);
+  for (let i = 0; i < p.count; i++) {
+    const X = p.getX(i) + cx, Y = p.getY(i) + cy, Z = p.getZ(i) + cz, nx = n.getX(i), ny = n.getY(i), nz = n.getZ(i);
+    let c = 1;
+    if (ny > 0.5) { const s = top.userData.s; uv.setXY(i, X / s, -Z / s); }
+    else {
+      const s = side.userData.s; c = p.getY(i) > 0 ? cT : cB;
+      if (ny < -0.5) uv.setXY(i, X / s, Z / s);
+      else if (Math.abs(nx) > 0.5) uv.setXY(i, -nx * Z / s, Y / s);
+      else uv.setXY(i, nz * X / s, Y / s);
+    }
+    col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = c;
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const m = new THREE.Mesh(g, [side, side, top, side, side, side]); m.position.set(cx, cy, cz); world.add(m);
+}
+const THEME = [['pierre', 'sombre'], ['brique', 'beton'], ['beton', 'sombre'], ['sombre', 'beton']], MIX = ['pierre', 'brique', 'beton', 'sombre'];
+let sec = 0;
+MAP.forEach((p, i) => {
+  const th = sec < 4 ? THEME[sec] : [MIX[i % 4], MIX[(i + 2) % 4]], cap = M[th[0]], shaft = M[th[1]];
+  const small = Math.min(p.largeur, p.profondeur), capH = p.type !== 'normal' ? 150 : small <= 64 ? 40 : 52 + (i * 53 % 4) * 30, inset = small >= 96 ? 10 : 4;
+  block(p.x, p.y - capH / 2, p.z, p.largeur, capH, p.profondeur, cap, p.type === 'normal' ? cap : M[p.type], 0.95, 0.66);
+  block(p.x, p.y - capH - (PLAT_H - capH) / 2, p.z, p.largeur - 2 * inset, PLAT_H - capH, p.profondeur - 2 * inset, shaft, shaft, 0.58, 0.2);
+  const n = MAP[i + 1];
+  p.yaw = n ? Math.atan2(-(n.x - p.x), -(n.z - p.z)) : 0;
+  if (p.type === 'checkpoint') sec++;
+});
+for (const d of DECOR) { const h = d.h || PLAT_H; block(d.x, d.y - h / 2, d.z, d.w, h, d.d, M[d.tex], M[d.tex], 0.95, d.h ? 0.6 : 0.25); }
+const MIN_Y = Math.min(...MAP.map(p => p.y));
+let KILL_Y = MIN_Y - KILL_DEPTH;
+
+// ================= Surf : brosses convexes (plateformes + rampes), collision par plans =================
+M.dalle = worldTex(8, 512, (g, r) => { concrete(g, r, [172, 164, 150], 256); }, [0.4, 0.2, 0.08, 0.6]); M.dalle.side = THREE.DoubleSide;
+M.sous = worldTex(9, 384, (g, r) => { concrete(g, r, [128, 122, 112], 256); tieHoles(g); }, [0.6, 0.4, 0.14, 1.3]); M.sous.side = THREE.DoubleSide;
+const surfBrushes = [], surfSegs = [], UP = new V3(0, 1, 0), hitPlanes = [];
+let SURF_MIN_Y = 0;
+const mkPlane = (n, p, solid) => ({n, d: n.dot(p), solid});
+function meet3(n1, n2, P, y) {   // point commun à deux faces passant par P et au plan horizontal y
+  const c23 = new V3().crossVectors(n2, UP), det = n1.dot(c23);
+  if (Math.abs(det) < 1e-4) return null;
+  return c23.multiplyScalar(n1.dot(P)).add(new V3().crossVectors(UP, n1).multiplyScalar(n2.dot(P))).add(new V3().crossVectors(n1, n2).multiplyScalar(y)).divideScalar(det);
+}
+function buildSurfBrushes() {
+  surfBrushes.length = 0; surfSegs.length = 0;
+  const chains = []; let chain = null;
+  for (const e of MAP_SURF) {
+    if (e.type !== 'rampe') {
+      const h = (e.dir || 0) * Math.PI / 180, fx = Math.sin(h), fz = -Math.cos(h);
+      const ext = Math.min(e.largeur / 2 / Math.max(Math.abs(fx), 1e-6), e.profondeur / 2 / Math.max(Math.abs(fz), 1e-6));
+      e.yaw = -h; e.sx = e.x + fx * Math.max(0, ext - 150); e.sz = e.z + fz * Math.max(0, ext - 150);   // départ près du bord avant
+      const hx = e.largeur / 2 + HULL, hz = e.profondeur / 2 + HULL, yb = e.y - PLAT_H - HULL_H;
+      surfBrushes.push({plat: e, yk: e.y, cx: e.x, cz: e.z, x0: e.x - hx, x1: e.x + hx, y0: yb, y1: e.y, z0: e.z - hz, z1: e.z + hz, planes: [
+        {n: new V3(0, 1, 0), d: e.y, solid: true}, {n: new V3(0, -1, 0), d: -yb, solid: true},
+        {n: new V3(1, 0, 0), d: e.x + hx, solid: true}, {n: new V3(-1, 0, 0), d: hx - e.x, solid: true},
+        {n: new V3(0, 0, 1), d: e.z + hz, solid: true}, {n: new V3(0, 0, -1), d: hz - e.z, solid: true}]});
+      chain = null;
+    } else {
+      if (e.x !== undefined) { chain = {W: e.largeur, H: e.hauteur, pts: [new V3(e.x, e.y, e.z)], segs: []}; chains.push(chain); }
+      const h = e.dir * Math.PI / 180, b = e.pente * Math.PI / 180, d = new V3(Math.sin(h) * Math.cos(b), Math.sin(b), -Math.cos(h) * Math.cos(b));
+      chain.pts.push(chain.pts[chain.pts.length - 1].clone().addScaledVector(d, e.longueur));
+      chain.segs.push({d, h, len: e.longueur, lat: new V3(Math.cos(h), 0, Math.sin(h))});
+    }
+  }
+  for (const c of chains) {
+    const m = c.segs.length, EL = [], ER = [], MP = [];
+    for (const s of c.segs) {      // deux faces inclinées par segment
+      s.sR = s.lat.clone().multiplyScalar(c.W / 2).addScaledVector(UP, -c.H); s.sL = s.lat.clone().multiplyScalar(-c.W / 2).addScaledVector(UP, -c.H);
+      s.nR = new V3().crossVectors(s.sR, s.d).normalize(); if (s.nR.y < 0) s.nR.negate();
+      s.nL = new V3().crossVectors(s.d, s.sL).normalize(); if (s.nL.y < 0) s.nL.negate();
+    }
+    for (let j = 0; j <= m; j++) {  // jonctions : l'arête commune de deux faces successives passe par le point d'arête → surface continue
+      const P = c.pts[j], a = c.segs[Math.max(0, j - 1)], b = c.segs[Math.min(m - 1, j)], mid = j > 0 && j < m;
+      EL.push((mid && meet3(a.nL, b.nL, P, P.y - c.H)) || P.clone().add(b.sL));
+      ER.push((mid && meet3(a.nR, b.nR, P, P.y - c.H)) || P.clone().add(b.sR));
+      const mn = new V3().crossVectors(EL[j].clone().sub(P), ER[j].clone().sub(P)).normalize(); if (mn.dot(b.d) < 0) mn.negate();
+      MP.push(mn);
+    }
+    let u = 0;
+    c.segs.forEach((s, k) => {
+      const P = c.pts[k], Q = c.pts[k + 1];
+      const bn = new V3().crossVectors(ER[k].clone().sub(EL[k]), EL[k + 1].clone().sub(EL[k])).normalize(); if (bn.y > 0) bn.negate();
+      const bb = new THREE.Box3().setFromPoints([P, Q, EL[k], ER[k], EL[k + 1], ER[k + 1]]).expandByScalar(2);
+      // plans de jonction internes : délimitent le segment mais ne poussent jamais le joueur
+      surfBrushes.push({yk: bb.min.y, cx: (P.x + Q.x) / 2, cz: (P.z + Q.z) / 2, x0: bb.min.x, x1: bb.max.x, y0: bb.min.y, y1: bb.max.y, z0: bb.min.z, z1: bb.max.z, planes: [
+        mkPlane(s.nR, P, true), mkPlane(s.nL, P, true), mkPlane(MP[k].clone().negate(), P, k === 0), mkPlane(MP[k + 1], Q, k === m - 1), mkPlane(bn, EL[k], true)]});
+      surfSegs.push(Object.assign(s, {P, Q, W: c.W, H: c.H, EL0: EL[k], ER0: ER[k], EL1: EL[k + 1], ER1: ER[k + 1], u0: u, k, first: k === 0, last: k === m - 1}));
+      u += s.len;
+    });
+  }
+  SURF_MIN_Y = Math.min(...surfBrushes.map(b => b.yk));
+}
+// plan le moins pénétré d'une brosse contenant le point (null si le point est dehors)
+function brushHit(b, x, y, z) {
+  if (x < b.x0 || x > b.x1 || y < b.y0 || y > b.y1 || z < b.z0 || z > b.z1) return null;
+  let best = -Infinity, bp = null;
+  for (const pl of b.planes) { const s = pl.n.x * x + pl.n.y * y + pl.n.z * z - pl.d; if (s >= 0) return null; if (pl.solid && s > best) { best = s; bp = pl; } }
+  if (bp) bp.depth = best;
+  return bp;
+}
+function surfCollide() {
+  hitPlanes.length = 0;
+  for (let it = 0; it < 4; it++) {
+    let hit = false;
+    for (const b of surfBrushes) {
+      const bp = brushHit(b, pos.x, pos.y, pos.z); if (!bp) continue;
+      pos.addScaledVector(bp.n, 0.03 - bp.depth); hit = true;                      // repousser hors du plan
+      const dn = vel.dot(bp.n); if (dn < 0) vel.addScaledVector(bp.n, -dn);        // ClipVelocity : aucune perte le long de la surface
+      for (const q of hitPlanes) if (q !== bp && vel.dot(q.n) < -1e-3) {           // deux plans à la fois : glisser le long de leur arête commune
+        const c = new V3().crossVectors(q.n, bp.n); if (c.lengthSq() > 1e-8) { c.normalize(); vel.copy(c.multiplyScalar(vel.dot(c))); }
+      }
+      if (!hitPlanes.includes(bp)) hitPlanes.push(bp);
+    }
+    if (!hit) break;
+  }
+}
+function moveSurf() {
+  vel.x = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, vel.x)); vel.y = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, vel.y)); vel.z = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, vel.z));
+  const n = Math.max(1, Math.ceil(vel.length() * DT / SUBSTEP)), h = DT / n;
+  for (let i = 0; i < n; i++) { pos.addScaledVector(vel, h); surfCollide(); }
+  if (vel.y > 140) return null;
+  for (const b of surfBrushes) {        // sol seulement si la normale est assez verticale ; une face de rampe ne l'est jamais
+    const bp = brushHit(b, pos.x, pos.y - 2, pos.z);
+    if (bp && bp.n.y >= SURF_GROUND_NY) { pos.y = pos.y - 2 - bp.depth / bp.n.y; vel.y = 0; return b.plat; }
+  }
+  return null;
+}
+function killPlaneSurf() { let m = Infinity; for (const b of surfBrushes) if (Math.abs(b.cx - pos.x) < 4500 && Math.abs(b.cz - pos.z) < 4500 && b.yk < m) m = b.yk; return (m === Infinity ? SURF_MIN_Y : m) - 700; }
+
+function buildSurfScene() {
+  world = sceneSurf;
+  const BOT = SURF_MIN_Y - 22000, mk = () => ({p: [], n: [], u: [], c: []}), F = mk(), U = mk();
+  const tri = (o, n, vs) => { for (const [v, uv, col] of vs) { o.p.push(v.x, v.y, v.z); o.n.push(n.x, n.y, n.z); o.u.push(uv[0], uv[1]); o.c.push(col, col, col); } };
+  const quad = (o, n, a, b, c, d) => { tri(o, n, [a, b, c]); tri(o, n, [a, c, d]); };
+  const lerp = (a, b, t) => a.clone().lerp(b, t), S = M.dalle.userData.s, SU = M.sous.userData.s;
+  const dseg = (x, z, s) => { const bx = s.Q.x - s.P.x, bz = s.Q.z - s.P.z, t = Math.max(0, Math.min(1, ((x - s.P.x) * bx + (z - s.P.z) * bz) / (bx * bx + bz * bz))); return Math.hypot(x - s.P.x - bx * t, z - s.P.z - bz * t); };
+  MAP_SURF.forEach((p, i) => {
+    if (p.type === 'rampe') return;
+    block(p.x, p.y - 90, p.z, p.largeur, 180, p.profondeur, M.pierre, M[p.type], 0.95, 0.66);
+    block(p.x, (p.y - 180 + BOT) / 2, p.z, p.largeur - 40, p.y - 180 - BOT, p.profondeur - 40, M.sombre, M.sombre, 0.58, 0.2);
+    const h = (p.dir || 0) * Math.PI / 180;
+    for (const sd of [-1, 1]) {         // grandes tours de part et d'autre, pour l'échelle
+      const off = Math.max(p.largeur, p.profondeur) / 2 + 1500, x = p.x + Math.cos(h) * sd * off, z = p.z + Math.sin(h) * sd * off;
+      if (surfSegs.some(s => dseg(x, z, s) < 1000) || MAP_SURF.some(q => q !== p && q.type !== 'rampe' && Math.hypot(q.x - x, q.z - z) < 1800)) continue;
+      const top = p.y + 600 + (i * 137 + (sd > 0 ? 260 : 0)) % 700, sz = 380 + (i * 53 + (sd > 0 ? 90 : 0)) % 170, mat = sd > 0 ? M.pierre : M.sombre;
+      block(x, (top + BOT) / 2, z, sz, top - BOT, sz, mat, mat, 0.9, 0.2);
+    }
+  });
+  let pil = 0;
+  for (const s of surfSegs) {
+    for (const [E0, E1, n] of [[s.ER0, s.ER1, s.nR], [s.EL0, s.EL1, s.nL]]) {
+      const fl = E0.distanceTo(s.P), ua = s.u0 + E0.clone().sub(s.P).dot(s.d), ub = s.u0 + s.len + E1.clone().sub(s.Q).dot(s.d);
+      // arête et bord inférieur marqués par une bande sombre, face éclaircie vers le haut
+      for (const [t0, t1, c0, c1] of [[0, 0.045, 0.5, 0.5], [0.045, 0.95, 1, 0.8], [0.95, 1, 0.5, 0.5]])
+        quad(F, n, [lerp(s.P, E0, t0), [mix(s.u0, ua, t0) / S, t0 * fl / S], c0], [lerp(s.Q, E1, t0), [mix(s.u0 + s.len, ub, t0) / S, t0 * fl / S], c0],
+          [lerp(s.Q, E1, t1), [mix(s.u0 + s.len, ub, t1) / S, t1 * fl / S], c1], [lerp(s.P, E0, t1), [mix(s.u0, ua, t1) / S, t1 * fl / S], c1]);
+    }
+    const uvb = v => [v.x / SU, v.z / SU], uvc = v => [v.dot(s.lat) / SU, v.y / SU];
+    quad(U, new V3(0, -1, 0), [s.EL0, uvb(s.EL0), 0.42], [s.EL1, uvb(s.EL1), 0.42], [s.ER1, uvb(s.ER1), 0.42], [s.ER0, uvb(s.ER0), 0.42]);
+    if (s.first) tri(U, s.d.clone().negate(), [[s.P, uvc(s.P), 0.75], [s.EL0, uvc(s.EL0), 0.6], [s.ER0, uvc(s.ER0), 0.6]]);
+    if (s.last) tri(U, s.d, [[s.Q, uvc(s.Q), 0.75], [s.EL1, uvc(s.EL1), 0.6], [s.ER1, uvc(s.ER1), 0.6]]);
+    // piliers porteurs : le sommet rentre dans le prisme, le pied se perd dans le brouillard
+    const tb = Math.abs(s.d.y) / Math.hypot(s.d.x, s.d.z), cnt = s.len >= 500 ? Math.max(1, Math.round(s.len / 800)) : (s.k % 3 === 1 ? 1 : 0), size = Math.round(s.W * 0.42);
+    for (let i = 0; i < cnt; i++) { const c = lerp(s.P, s.Q, (i + 0.5) / cnt), top = c.y - s.H + size / 2 * tb + 6, mat = (pil++ % 2) ? M.beton : M.sombre; block(c.x, (top + BOT) / 2, c.z, size, top - BOT, size, mat, mat, 0.7, 0.15); }
+  }
+  for (const [o, mat] of [[F, M.dalle], [U, M.sous]]) {
+    if (!o.p.length) continue;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(o.p, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(o.n, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(o.u, 2)); g.setAttribute('color', new THREE.Float32BufferAttribute(o.c, 3));
+    sceneSurf.add(new THREE.Mesh(g, mat));
+  }
+  world = scene;
+}
+buildSurfBrushes(); buildSurfScene();
+
+// ================= Ciel =================
+const sky = new THREE.Group(); scene.add(sky);
+(() => {
+  const W = 2048, H = 1024, c = mkCanvas(W, H), g = c.getContext('2d');
+  const gr = g.createLinearGradient(0, 0, 0, H / 2);
+  gr.addColorStop(0, '#44536a'); gr.addColorStop(0.45, '#727c8b'); gr.addColorStop(0.8, '#b3a493'); gr.addColorStop(1, css(FOG));
+  g.fillStyle = gr; g.fillRect(0, 0, W, H / 2); g.fillStyle = css(FOG); g.fillRect(0, H / 2, W, H / 2);
+  const sx = ((Math.atan2(SUN.z, -SUN.x) / (2 * Math.PI)) % 1 + 1) % 1 * W, sy = H / 2 - 10 / 180 * H;
+  for (const ox of [-W, 0, W]) {
+    const rg = g.createRadialGradient(sx + ox, sy, 0, sx + ox, sy, 560);
+    rg.addColorStop(0, 'rgba(255,240,205,1)'); rg.addColorStop(0.03, 'rgba(255,228,176,.8)'); rg.addColorStop(0.12, 'rgba(250,205,150,.4)'); rg.addColorStop(0.45, 'rgba(240,190,140,.12)'); rg.addColorStop(1, 'rgba(240,190,140,0)');
+    g.fillStyle = rg; g.fillRect(0, 0, W, H);
+  }
+  // nuages : bruit projeté sur un plan (s'aplatissent vers l'horizon)
+  const cw = 1024, ch = 256, cc = mkCanvas(cw, ch), cg = cc.getContext('2d'), im = cg.createImageData(cw, ch), d = im.data;
+  const sh = Math.hypot(SUN.x, SUN.z), lx = SUN.x / sh * 0.2, lz = SUN.z / sh * 0.2;
+  for (let j = 0, i = 0; j < ch; j++) {
+    const el = (1 - (j + 0.5) / ch) * Math.PI / 2, k = 1.5 / Math.tan(Math.max(el, 0.02)), fade = sstep(0.04, 0.22, el), hz = 1 - sstep(0.05, 0.5, el);
+    for (let x = 0; x < cw; x++, i += 4) {
+      const az = (x + 0.5) / cw * 2 * Math.PI, px = -Math.cos(az) * k + 40, pz = Math.sin(az) * k + 40;
+      const n = fbm(px, pz, 91, 5), a = sstep(0.5, 0.72, n) * fade;
+      if (a <= 0) continue;
+      const lit = Math.min(1, Math.max(0, (n - fbm(px + lx, pz + lz, 91, 3)) * 6 + 0.5));
+      d[i] = mix(mix(126, 246, lit), FOG[0], hz * 0.55); d[i + 1] = mix(mix(120, 226, lit), FOG[1], hz * 0.55); d[i + 2] = mix(mix(128, 198, lit), FOG[2], hz * 0.55); d[i + 3] = a * 235;
+    }
+  }
+  cg.putImageData(im, 0, 0); g.drawImage(cc, 0, 0, W, H / 2);
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(9500, 40, 20), new THREE.MeshBasicMaterial({map: new THREE.CanvasTexture(c), side: THREE.BackSide, fog: false, depthWrite: false}));
+  dome.renderOrder = -2; sky.add(dome);
+
+  // silhouettes lointaines : deux crêtes + ruines
+  const RW = 4096, RH = 256, HZ = 192, rc = mkCanvas(RW, RH), rg2 = rc.getContext('2d'), r = rng(77);
+  const ridge = (amp, base, freq, seed, t) => {
+    rg2.fillStyle = css([mix(FOG[0], 62, t), mix(FOG[1], 64, t), mix(FOG[2], 78, t)]); rg2.beginPath(); rg2.moveTo(0, RH);
+    for (let x = 0; x <= RW; x += 4) rg2.lineTo(x, HZ - base - amp * Math.pow(fbm(x / RW * freq, 0.5, seed, 5, freq), 1.6) * 2);
+    rg2.lineTo(RW, RH); rg2.fill();
+  };
+  ridge(88, 6, 9, 11, 0.24); ridge(46, 2, 16, 23, 0.4);
+  rg2.fillStyle = css([mix(FOG[0], 56, 0.52), mix(FOG[1], 56, 0.52), mix(FOG[2], 66, 0.52)]);
+  for (let i = 0; i < 26; i++) {
+    let x = r() * RW;
+    for (let k = 0, m = 2 + r() * 5; k < m; k++) { const w = 7 + r() * 22, h = 10 + r() * 46; for (const ox of [0, -RW]) { rg2.fillRect(x + ox, HZ - h, w, h + 8); if (r() < 0.35) rg2.fillRect(x + ox + w * 0.3, HZ - h - 8 - r() * 10, w * 0.25, 20); } x += w + r() * 14; }
+  }
+  const hg = rg2.createLinearGradient(0, HZ - 46, 0, HZ + 4); hg.addColorStop(0, css(FOG, 1, 0)); hg.addColorStop(1, css(FOG));
+  rg2.fillStyle = hg; rg2.fillRect(0, HZ - 46, RW, 50); rg2.fillStyle = css(FOG); rg2.fillRect(0, HZ + 4, RW, RH);
+  const rt = new THREE.CanvasTexture(rc); rt.wrapS = THREE.RepeatWrapping; rt.anisotropy = ANISO;
+  const ring = new THREE.Mesh(new THREE.CylinderGeometry(8000, 8000, 2240, 64, 1, true), new THREE.MeshBasicMaterial({map: rt, transparent: true, side: THREE.BackSide, fog: false, depthWrite: false}));
+  ring.position.y = 560; ring.renderOrder = -1; sky.add(ring);
+})();
+
+// ================= Viewmodel : couteau + main (scène séparée, FOV 54) =================
+const vmScene = new THREE.Scene(), vmCam = new THREE.PerspectiveCamera(54, 1, 0.1, 200);
+vmScene.add(new THREE.HemisphereLight(0x9aa8bc, 0x5c5044, 0.85));
+const vmSun = new THREE.DirectionalLight(0xffe2b8, 0.8); vmSun.position.set(-0.7, 0.9, 0.6); vmScene.add(vmSun);
+const vm = new THREE.Group(), grip = new THREE.Group(); vmScene.add(vm); vm.add(grip);
+(() => {
+  const P = a => new V3(a[0], a[1], a[2]);
+  const ball = (p, r, mat, sc) => { const m = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 9), mat); m.position.copy(P(p)); if (sc) m.scale.set(sc[0], sc[1], sc[2]); grip.add(m); };
+  const tube = (pts, r, mat) => { grip.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts.map(P)), 16, r, 9, false), mat)); ball(pts[0], r, mat); ball(pts[pts.length - 1], r, mat); };
+  const rod = (a, b, r0, r1, mat) => { const d = b.clone().sub(a), m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r0, d.length(), 16), mat); m.position.copy(a).addScaledVector(d, 0.5); m.quaternion.setFromUnitVectors(new V3(0, 1, 0), d.clone().normalize()); grip.add(m); };
+  // matériaux
+  const fc = mkCanvas(64, 64), fg = fc.getContext('2d'), r = rng(5);
+  fg.fillStyle = '#8f96a0'; fg.fillRect(0, 0, 64, 64);
+  for (let i = 0; i < 900; i++) { fg.fillStyle = `rgba(${r() < 0.5 ? '0,0,0' : '255,255,255'},${0.05 + r() * 0.1})`; fg.fillRect(r() * 64, r() * 64, 1 + r() * 3, 1); }
+  const ft = new THREE.CanvasTexture(fc); ft.wrapS = ft.wrapT = THREE.RepeatWrapping; ft.repeat.set(5, 9);
+  const side = mkCanvas(32, 32), sg = side.getContext('2d'), lg = sg.createLinearGradient(0, 0, 0, 32);
+  lg.addColorStop(0, '#8e9bad'); lg.addColorStop(0.5, '#d8c7a8'); lg.addColorStop(0.56, '#4a3f34'); lg.addColorStop(1, '#262019'); sg.fillStyle = lg; sg.fillRect(0, 0, 32, 32);
+  const flat = col => { const c = mkCanvas(32, 32), g = c.getContext('2d'); g.fillStyle = col; g.fillRect(0, 0, 32, 32); return c; };
+  const env = new THREE.CubeTexture([side, side, flat('#8b99ad'), flat('#241f1a'), side, side]); env.needsUpdate = true;
+  // acier brossé : stries dans la longueur, émouture plus claire côté tranchant
+  const sc = mkCanvas(256, 64), sx = sc.getContext('2d'), sgr = sx.createLinearGradient(0, 0, 0, 64);
+  sgr.addColorStop(0, '#8e949a'); sgr.addColorStop(0.5, '#b9bec3'); sgr.addColorStop(0.72, '#a2a8ae'); sgr.addColorStop(0.8, '#e6e9eb'); sgr.addColorStop(1, '#cfd3d6'); sx.fillStyle = sgr; sx.fillRect(0, 0, 256, 64);
+  for (let i = 0; i < 260; i++) { sx.fillStyle = `rgba(${r() < 0.5 ? '20,22,26' : '255,255,255'},${0.04 + r() * 0.1})`; sx.fillRect(r() * 256, r() * 64, 20 + r() * 120, 1); }
+  const st = new THREE.CanvasTexture(sc); st.wrapS = st.wrapT = THREE.RepeatWrapping; st.repeat.set(1 / 9.6, 1 / 1.9); st.offset.set(0, 0.55);
+  const mGlove = new THREE.MeshLambertMaterial({color: 0x3a3b3e, map: ft}), mPad = new THREE.MeshLambertMaterial({color: 0x4a4b4e}), mStrap = new THREE.MeshLambertMaterial({color: 0x1b1c1e});
+  const mSleeve = new THREE.MeshLambertMaterial({color: 0x4e5a6a, map: ft}), mCuff = new THREE.MeshLambertMaterial({color: 0x333c48});
+  const mGrip = new THREE.MeshLambertMaterial({color: 0x161719});
+  const mGuard = new THREE.MeshPhongMaterial({color: 0x4b4e52, specular: 0x8a8a8a, shininess: 35});
+  const mBlade = new THREE.MeshPhongMaterial({color: 0xd0d4d8, map: st, specular: 0xffffff, shininess: 110, envMap: env, reflectivity: 0.38, combine: THREE.MixOperation});
+  // lame : profil (longueur, dos +, tranchant -) extrudé avec biseaux
+  const bs = new THREE.Shape();
+  bs.moveTo(0, 0.6); bs.lineTo(5.4, 0.7); bs.quadraticCurveTo(7.6, 0.44, 9.4, 0.12); bs.quadraticCurveTo(8.7, -0.86, 6.6, -0.96); bs.lineTo(1.3, -0.9); bs.lineTo(1.0, -0.58); bs.lineTo(0, -0.58);
+  const bg = new THREE.ExtrudeGeometry(bs, {depth: 0.08, bevelEnabled: true, bevelThickness: 0.1, bevelSize: 0.34, bevelOffset: -0.34, bevelSegments: 1, curveSegments: 10, steps: 1});
+  bg.translate(0, 0, -0.04); bg.applyMatrix4(new THREE.Matrix4().makeBasis(new V3(0, 1, 0), new V3(0, 0, 1), new V3(1, 0, 0)));
+  grip.add(new THREE.Mesh(bg, mBlade));
+  const fuller = new THREE.Mesh(new THREE.BoxGeometry(0.3, 3.9, 0.1), mGuard); fuller.position.set(0, 3.1, 0.24); grip.add(fuller);
+  // garde, manche strié, pommeau
+  const guard = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.34, 2.5), mGuard); guard.position.set(0, -0.12, -0.12); grip.add(guard);
+  const hp = [[0, -4.95], [0.5, -4.95], [0.66, -4.8], [0.66, -4.45], [0.56, -4.3]];
+  for (let y = -4.2; y < -0.5; y += 0.42) hp.push([0.56, y], [0.64, y + 0.08], [0.64, y + 0.3], [0.56, y + 0.38]);
+  hp.push([0.58, -0.3], [0, -0.3]);
+  const hg = new THREE.LatheGeometry(hp.map(p => new THREE.Vector2(p[0], p[1])), 16); hg.scale(0.74, 1, 1.05); grip.add(new THREE.Mesh(hg, mGrip));
+  // main : doigts refermés autour du manche (ellipse 0.47 x 0.67)
+  const A = 0.82, B = 1.02;
+  [[-0.8, 0.41, 230], [-1.62, 0.42, 235], [-2.44, 0.4, 230], [-3.2, 0.35, 220]].forEach(([y0, rf, end]) => {
+    const pts = []; for (let dg = -40; dg <= end; dg += 22.5) { const t = dg * Math.PI / 180; pts.push([A * Math.cos(t), y0 - 0.28 * Math.max(0, dg) / 180, -B * Math.sin(t)]); }
+    tube(pts, rf, mGlove); ball([A * 1.1 * Math.cos(0.5), y0, -B * 1.1 * Math.sin(0.5)], rf * 1.12, mPad);
+  });
+  ball([0.95, -2.0, 0.62], 1, mGlove, [0.64, 1.85, 1.36]);
+  ball([0.75, -1.1, 1.25], 0.72, mGlove);
+  tube([[0.82, -0.9, 1.2], [0.3, -0.5, 1.24], [-0.3, -0.45, 1.12], [-0.76, -0.62, 0.76]], 0.4, mGlove);
+  // poignet, manche de tenue
+  const Wr = new V3(0.95, -2.9, 1.5), D = new V3(0.1, -0.66, 0.74).normalize(), at = k => Wr.clone().addScaledVector(D, k);
+  rod(at(0.1), at(2.3), 1.06, 1.22, mGlove); rod(at(1.0), at(1.45), 1.16, 1.2, mStrap); rod(at(1.9), at(2.5), 1.42, 1.44, mCuff); rod(at(2.4), at(24), 1.36, 2.3, mSleeve);
+  // orientation : avant-bras venant du coin bas-droit, lame vers le haut/gauche, plat tourné vers le joueur
+  const fr = (d, up) => { const e = up.clone().addScaledVector(d, -up.dot(d)).normalize(); return new THREE.Matrix4().makeBasis(d, e, new V3().crossVectors(d, e)); };
+  grip.quaternion.setFromRotationMatrix(fr(new V3(0.72, -0.5, 0.48).normalize(), new V3(-0.4, 1, 0)).multiply(fr(D, new V3(0, 1, 0)).transpose()));
+  grip.position.copy(new V3(0.4, -2, 0.3).applyQuaternion(grip.quaternion).negate());
+})();
+const VM_BASE = new V3(7.6, -6.1, -19);
+let bobT = 0, bobA = 0, swX = 0, swY = 0, jy = 0, jv = 0, atk = -1, lastYaw = 0, lastPitch = 0;
+function vmUpdate(dt) {
+  const sp = Math.hypot(vel.x, vel.z), cl = (v, m) => Math.max(-m, Math.min(m, v));
+  bobA += ((onGround ? Math.min(sp / MAX_SPEED, 1) : 0) - bobA) * Math.min(1, dt * 8);
+  bobT += dt * (4 + sp * 0.03);
+  swX = cl(swX * Math.exp(-dt * 9) + (yaw - lastYaw) * 8, 1.6); swY = cl(swY * Math.exp(-dt * 9) - (pitch - lastPitch) * 8, 1.2);
+  lastYaw = yaw; lastPitch = pitch;
+  const tgt = onGround ? 0 : cl(-vel.y * 0.0016, 0.6);
+  jv += ((tgt - jy) * 140 - jv * 16) * dt; jy += jv * dt;
+  let ax = 0, ay = 0, az = 0, rx = 0, ry = 0, rz = 0;
+  if (atk >= 0) { atk += dt / 0.36; if (atk >= 1) atk = -1; else { const p = Math.sin(Math.PI * Math.pow(atk, 0.55)); ax = -3.8 * p; ay = 0.9 * p; az = -3.4 * p; rz = 0.8 * p; ry = 0.55 * p; rx = -0.3 * p; } }
+  vm.position.set(VM_BASE.x + Math.sin(bobT) * 0.24 * bobA + swX * 0.5 + ax, VM_BASE.y + Math.sin(bobT * 2) * 0.13 * bobA + swY * 0.4 + jy + ay, VM_BASE.z + az);
+  vm.rotation.set(swY * 0.05 - jy * 0.04 + rx, swX * 0.07 + ry, swX * 0.03 + rz);
+}
+
+function resize() { renderer.setSize(innerWidth, innerHeight, false); camera.aspect = vmCam.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); vmCam.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+
+// ================= État =================
+const pos = new THREE.Vector3(), prev = new THREE.Vector3(), vel = new THREE.Vector3();
+let yaw = 0, pitch = 0, onGround = true, cp = MAP[0];
+let time = 0, running = false, finished = false, playing = false;
+// une entrée par map : données, scène, réglages, meilleur temps
+const MAPS = {
+  bhop: {data: MAP, scene, surf: false, airAccel: AIR_ACCELERATE, sky: 1, best: null},
+  surf: {data: MAP_SURF, scene: sceneSurf, surf: true, airAccel: SURF_AIR_ACCELERATE, sky: 5, best: null}
+};
+let cur = MAPS.bhop;
+const K = {};
+const $ = id => document.getElementById(id);
+const menu = $('menu'), elT = $('t'), elV = $('v'), elB = $('b');
+const fmt = t => { const m = Math.floor(t / 60), s = t - m * 60; return String(m).padStart(2, '0') + ':' + s.toFixed(3).padStart(6, '0'); };
+
+function spawn(p) { pos.set(p.sx === undefined ? p.x : p.sx, p.y, p.sz === undefined ? p.z : p.sz); prev.copy(pos); vel.set(0, 0, 0); yaw = p.yaw; pitch = 0; onGround = true; }
+function restart() { cp = cur.data[0]; time = 0; running = false; finished = false; spawn(cp); }
+restart();
+
+// ================= Entrées =================
+addEventListener('keydown', e => {
+  if (e.code === 'Space') e.preventDefault();
+  if (e.repeat) return;
+  K[e.code] = true;
+  if (!playing) return;
+  if (e.code === 'KeyR') spawn(cp);
+  if (e.code === 'KeyT') restart();
+  if (e.code === 'KeyM') toMenu();
+});
+addEventListener('keyup', e => { K[e.code] = false; });
+addEventListener('blur', () => { for (const k in K) K[k] = false; });
+function setMap(key) {
+  if (MAPS[key] === cur) return;
+  cur = MAPS[key]; cur.scene.add(sky); sky.scale.setScalar(cur.sky); KILL_Y = -1e9; restart();
+}
+function startMap(key) {
+  setMap(key); playing = true; menu.style.display = 'none';
+  try { const r = renderer.domElement.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+}
+function toMenu() { playing = false; menu.style.display = 'flex'; if (document.pointerLockElement) document.exitPointerLock(); }
+document.querySelectorAll('#menu .map').forEach(b => b.addEventListener('click', () => startMap(b.dataset.map)));
+document.addEventListener('pointerlockchange', () => {
+  if (!document.pointerLockElement) { playing = false; menu.style.display = 'flex'; }
+});
+addEventListener('mousemove', e => {
+  if (!playing || !(document.pointerLockElement || e.buttons)) return;
+  yaw -= e.movementX * SENS;
+  pitch = Math.max(-1.55, Math.min(1.55, pitch - e.movementY * SENS));
+});
+addEventListener('mousedown', e => { if (playing && e.button === 0 && atk < 0) atk = 0; });
+
+// ================= Physique : mouvement commun, collision selon la map =================
+const inXZ = (p, x, z) => Math.abs(x - p.x) < p.largeur / 2 + HULL && Math.abs(z - p.z) < p.profondeur / 2 + HULL;
+const hits = (x, y, z) => MAP.some(p => inXZ(p, x, z) && y < p.y && y + HULL_H > p.y - PLAT_H);
+
+function accelerate(wx, wz, wishspd, wishspeed, acc) {
+  const add = wishspd - (vel.x * wx + vel.z * wz);
+  if (add <= 0) return;
+  const a = Math.min(acc * wishspeed * DT, add);
+  vel.x += a * wx; vel.z += a * wz;
+}
+
+// bhop : collision AABB d'origine, inchangée
+function moveBhop() {
+  const nx = pos.x + vel.x * DT; if (hits(nx, pos.y, pos.z)) vel.x = 0; else pos.x = nx;
+  const nz = pos.z + vel.z * DT; if (hits(pos.x, pos.y, nz)) vel.z = 0; else pos.z = nz;
+  let ny = pos.y + vel.y * DT, ground = null;
+  for (const p of MAP) {
+    if (!inXZ(p, pos.x, pos.z)) continue;
+    if (vel.y <= 0 && pos.y >= p.y && ny <= p.y) { ny = p.y; vel.y = 0; ground = p; }
+    else if (vel.y > 0 && pos.y + HULL_H <= p.y - PLAT_H && ny + HULL_H > p.y - PLAT_H) { ny = p.y - PLAT_H - HULL_H; vel.y = 0; }
+  }
+  pos.y = ny; return ground;
+}
+
+function tick() {
+  // event.code : KeyW/A/S/D = ZQSD sur AZERTY, WASD sur QWERTY
+  const f = (K.KeyW ? 1 : 0) - (K.KeyS ? 1 : 0), s = (K.KeyD ? 1 : 0) - (K.KeyA ? 1 : 0);
+  const sy = Math.sin(yaw), cy = Math.cos(yaw);
+  let wx = -sy * f + cy * s, wz = -cy * f - sy * s;
+  const wl = Math.hypot(wx, wz), wish = wl ? MAX_SPEED : 0;
+  if (wl) { wx /= wl; wz /= wl; }
+
+  if (onGround && K.Space) { vel.y = JUMP_SPEED; onGround = false; }
+  if (onGround) {
+    const sp = Math.hypot(vel.x, vel.z);
+    if (sp > 0.1) { const ns = Math.max(sp - Math.max(sp, STOP_SPEED) * FRICTION * DT, 0) / sp; vel.x *= ns; vel.z *= ns; }
+    accelerate(wx, wz, wish, wish, ACCELERATE);
+    vel.y = 0;
+  } else {
+    vel.y -= GRAVITY * DT;
+    accelerate(wx, wz, Math.min(wish, AIR_WISH_CAP), wish, cur.airAccel);
+  }
+
+  const ground = cur.surf ? moveSurf() : moveBhop();
+  onGround = !!ground;
+
+  if (!running && !finished && !inXZ(cur.data[0], pos.x, pos.z)) running = true;
+  if (running) time += DT;
+  if (ground) {
+    if (ground.type === 'checkpoint') cp = ground;
+    if (ground.type === 'fin' && running) { running = false; finished = true; if (cur.best === null || time < cur.best) cur.best = time; }
+  }
+  if (pos.y < KILL_Y) { spawn(cp); }
+}
+
+// plan de chute local : sous la plateforme la plus basse des environs
+function killPlane() { let m = Infinity; for (const p of MAP) if (Math.abs(p.x - pos.x) < 1100 && Math.abs(p.z - pos.z) < 1100 && p.y < m) m = p.y; return (m === Infinity ? MIN_Y : m) - KILL_DEPTH; }
+
+// ================= Boucle =================
+const C_UP = '#8fe36b', C_DOWN = '#ff6f5e', C_FLAT = '#ffffff';
+let last = performance.now(), acc = 0, hudN = 0, hudSp = 0, bestUntil = 0, sV = '', sT = '', sB = '';
+function frame(now) {
+  requestAnimationFrame(frame);
+  const fdt = Math.min((now - last) / 1000, 0.1); last = now;
+  acc += fdt;
+  if (!playing) acc = 0;
+  while (acc >= DT) {
+    prev.copy(pos); const g0 = onGround, vy0 = vel.y, f0 = finished;
+    tick(); acc -= DT;
+    if (prev.distanceToSquared(pos) > 1e5) prev.copy(pos);
+    KILL_Y = cur.surf ? killPlaneSurf() : killPlane();
+    if (!g0 && onGround) jv -= Math.min(-vy0, 520) * 0.011; else if (g0 && !onGround && vel.y > 0) jv -= 2.4;
+    if (!f0 && finished) bestUntil = now + 3000;
+    if (++hudN >= 4) { hudN = 0; const sp = Math.hypot(vel.x, vel.z), d = sp - hudSp; hudSp = sp; elV.style.color = d > 1 ? C_UP : d < -1 ? C_DOWN : C_FLAT; }
+  }
+  camera.position.lerpVectors(prev, pos, acc / DT); camera.position.y += EYE;
+  camera.rotation.set(pitch, yaw, 0);
+  sky.position.copy(camera.position);
+  if (playing) vmUpdate(fdt);
+  let s = String(Math.round(Math.hypot(vel.x, vel.z))); if (s !== sV) elV.textContent = sV = s;
+  s = fmt(time); if (s !== sT) elT.textContent = sT = s;
+  s = now < bestUntil && cur.best !== null ? 'meilleur ' + fmt(cur.best) : ''; if (s !== sB) elB.textContent = sB = s;
+  renderer.clear(); renderer.render(cur.scene, camera);
+  renderer.clearDepth(); renderer.render(vmScene, vmCam);
+}
+vmUpdate(0);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
