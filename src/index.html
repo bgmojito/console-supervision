@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Supervision — Tableau de bord</title>
+<link rel="stylesheet" href="vendor/fonts/plex.css">
+<link rel="stylesheet" href="styles/console.css">
+</head>
+<body>
+<div class="app">
+  <nav class="nav" aria-label="Navigation">
+    <div class="brand"><i>SV</i>Supervision</div>
+    <a href="#" class="on">Tableau de bord</a>
+    <a href="#">Serveurs</a>
+    <a href="#">Alertes</a>
+    <a href="#">Mises à jour</a>
+    <a href="#">Sauvegardes</a>
+    <div class="sec">RAPPORTS</div>
+    <a href="#">Conformité</a>
+    <a href="#">Disponibilité</a>
+    <a href="#">Capacité</a>
+  </nav>
+
+  <div class="main">
+    <div class="top">
+      <div class="crumb">Supervision › <b id="crumb">Alertes en temps réel</b></div>
+      <div class="r"><span id="clock"></span><button class="btn" id="boss" title="Échap">Vue rapport</button></div>
+    </div>
+
+    <!-- Vue jeu -->
+    <div id="viewGame">
+      <div class="kpis">
+        <div class="kpi"><div class="l">Incidents traités</div><div class="v" id="kHits">0</div><div class="s" id="kHitsS">sur la session</div></div>
+        <div class="kpi"><div class="l">Taux de résolution</div><div class="v" id="kAcc">–</div><div class="s" id="kAccS">précision</div></div>
+        <div class="kpi"><div class="l">Délai moyen</div><div class="v" id="kAvg">–</div><div class="s" id="kAvgS">prise en charge</div></div>
+        <div class="kpi"><div class="l">Record</div><div class="v" id="kRec">–</div><div class="s" id="kRecS">mode actuel</div></div>
+      </div>
+
+      <div class="cols">
+        <div class="lcol">
+        <section class="panel">
+          <div class="ph">
+            <h2>Carte des alertes</h2>
+            <div class="seg" id="modes">
+              <button data-m="ronde" class="on" title="Ronde de nuit">Inspection</button>
+              <button data-m="precision">Précision</button>
+              <button data-m="track">Suivi</button>
+              <button data-m="spray">Dérive</button>
+            </div>
+            <select id="dur" aria-label="Durée"><option value="30">30 s</option><option value="60">60 s</option></select>
+            <span class="timer" id="timer">00:30</span>
+            <button class="btn" id="viewBtn" hidden>Vue réaliste</button>
+            <button class="btn" id="camBtn" hidden>Vue normale</button>
+            <button class="btn pri" id="go">Lancer l'analyse</button>
+          </div>
+          <div class="sprayopts" id="rondeOpts">
+            <div class="seg" id="rdSub"><button data-s="ronde" class="on" title="Ronde de nuit">Salle B2</button><button data-s="classic" title="Réactivité">Classique</button></div>
+            <select id="rdLevel" class="rdo" aria-label="Niveau"><option value="stagiaire">Stagiaire</option><option value="admin" selected>Admin</option><option value="root">Root</option><option value="infini">Infini</option></select>
+            <select id="rdWeapon" class="rdo" aria-label="Profil"><option value="ak47">AK-47</option><option value="m4a4">M4A4</option></select>
+            <label class="sens rdo">Sensi <input id="rdSens" inputmode="decimal" value="1"></label>
+            <label class="chk rdo" title="Déplacement libre ZQSD"><input type="checkbox" id="rdFree"> Manuel</label>
+          </div>
+          <div class="sprayopts" id="sprayOpts" hidden>
+            <div class="seg" id="exSeg"><button data-x="spray" class="on" title="Spray">Continu</button><button data-x="tap" title="One-tap">Ponctuel</button><button data-x="transfer" title="Transfert">Bascule</button></div>
+            <select id="dist" aria-label="Distance"><option value="10">10 m</option><option value="20" selected>20 m</option><option value="30">30 m</option></select>
+            <select id="armor" aria-label="Protection"><option value="kh">Durcie</option><option value="k">Partielle</option><option value="none">Aucune</option></select>
+            <select id="nT" aria-label="Nombre" hidden><option value="2">2 baies</option><option value="3" selected>3 baies</option></select>
+            <select id="weapon" aria-label="Profil"><option value="ak47">AK-47</option><option value="m4a4">M4A4</option></select>
+            <label class="sens">Sensi <input id="sens" inputmode="decimal" value="1"></label>
+            <label class="chk" id="ghostLbl"><input type="checkbox" id="ghost" checked> Pattern</label>
+            <label class="chk"><input type="checkbox" id="noise"> Bruit</label>
+          </div>
+          <div class="area" id="area">
+            <canvas id="sc" hidden></canvas>
+            <canvas id="rc3" hidden></canvas>
+            <div class="rdhud" id="rdHud" hidden>
+              <div id="rdFlash"></div>
+              <div id="rdOsd"><span id="rdOsdT"></span><i></i>REC</div>
+              <div id="rdInfo"></div>
+              <div id="rdMsg"></div>
+              <div id="rdX"></div>
+            </div>
+            <div class="tgt" id="tgt" hidden></div>
+            <div class="cover" id="cover">
+              <div>
+                <h3>Prêt</h3>
+                <p id="coverTxt">Réactivité : clique les cibles le plus vite possible. Précision : cibles qui rétrécissent. Suivi : garde le curseur sur la cible qui bouge. Échap bascule instantanément sur un rapport.</p>
+                <div id="rdRep" hidden></div>
+                <button class="btn pri" id="go2">Lancer l'analyse</button>
+              </div>
+            </div>
+          </div>
+          <div class="legend" id="legend">Mode réactivité : une alerte à la fois, chaque clic raté compte comme non résolu.</div>
+        </section>
+
+        <section class="panel" id="rpPanel" hidden>
+          <div class="ph">
+            <h2>Analyse post-incident</h2>
+            <div class="rpctl">
+              <button class="btn" id="rpPlay" disabled>Rejouer</button>
+              <button class="btn sm" id="rpPrev" aria-label="Échantillon précédent" disabled>‹</button>
+              <input type="range" id="rpSlider" min="1" max="1" value="1" step="1" aria-label="Échantillon" disabled>
+              <button class="btn sm" id="rpNext" aria-label="Échantillon suivant" disabled>›</button>
+              <span class="rpnum" id="rpNum">–</span>
+            </div>
+          </div>
+          <div class="rpbody">
+            <div class="rpview">
+              <canvas id="rpc"></canvas>
+              <div class="rpkey"><span><i class="ref"></i>Référence (compensation parfaite)</span><span><i></i>Trajet mesuré</span><span><i class="imp"></i>Impacts</span></div>
+            </div>
+            <div class="rptab" id="rpTab">
+              <table>
+                <thead><tr><th>Éch.</th><th>Vertical (°)</th><th>Horizontal (°)</th><th>Impact</th></tr></thead>
+                <tbody id="rpRows"><tr class="empty"><td colspan="4">Aucune séquence analysée.</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="rpfoot">
+            <div id="rpDetail">Tire une séquence : le replay s'affiche ici automatiquement.</div>
+            <div id="rpMeta">Référence : point d'impact du 1er échantillon, reporté sur chaque cible visée. Espace met la session en pause pour utiliser le curseur.</div>
+          </div>
+        </section>
+        </div>
+
+        <section class="panel">
+          <div class="ph"><h2>Journal des incidents</h2></div>
+          <div class="logwrap">
+            <table>
+              <thead><tr><th>Heure</th><th>Réf.</th><th>Hôte</th><th>Statut</th><th>Délai</th></tr></thead>
+              <tbody id="log"><tr class="empty"><td colspan="5">Aucun incident sur la période.</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- Vue rapport (anti-boss) -->
+    <div id="viewFake" hidden>
+      <div class="kpis">
+        <div class="kpi"><div class="l">Serveurs supervisés</div><div class="v">48</div><div class="s">2 hors ligne planifiés</div></div>
+        <div class="kpi"><div class="l">Conformité MAJ</div><div class="v">97,9 %</div><div class="s">+0,6 pt sur 7 jours</div></div>
+        <div class="kpi"><div class="l">Alertes ouvertes</div><div class="v">3</div><div class="s">dont 1 majeure</div></div>
+        <div class="kpi"><div class="l">Sauvegardes OK</div><div class="v">46 / 48</div><div class="s">dernière nuit</div></div>
+      </div>
+      <section class="panel">
+        <div class="ph"><h2>Conformité des mises à jour par serveur</h2><button class="btn">Exporter</button></div>
+        <div class="tw">
+          <table>
+            <thead><tr><th>Serveur</th><th>Rôle</th><th>Environnement</th><th>Statut</th><th>Conformité</th><th>Dernier contrôle</th></tr></thead>
+            <tbody id="fakeRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>
